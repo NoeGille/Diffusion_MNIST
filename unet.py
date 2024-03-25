@@ -22,22 +22,29 @@ class ConvBlock(nn.Module):
     def __init__(self, in_channels, out_channels, time_embed_dim=32):
         super().__init__()
         self.time_mlp = nn.Linear(time_embed_dim, out_channels)
+        self.cond_mlp = nn.Linear(time_embed_dim, out_channels)
         self.relu = nn.ReLU(inplace=True)
         self.conv1 = nn.Sequential(
             nn.Conv2d(in_channels,out_channels, 3, padding=1),
             nn.BatchNorm2d(out_channels),
-            nn.ReLU(inplace=True),
+            nn.GELU(),
         )
         self.conv2 = nn.Sequential(
             nn.Conv2d(out_channels,out_channels, 3, padding=1),
             nn.BatchNorm2d(out_channels),
-            nn.ReLU(inplace=True),
+            nn.GELU(),
         )
         
-    def forward(self, x, t):
+    def forward(self, x, t=None, cond_embed=None):
         x = self.conv1(x)
-        time_emb = self.relu(self.time_mlp(t))
-        x = x + time_emb[(..., ) + (None, ) * 2]
+        if t is None:
+            t = torch.zeros(1).to(x.device)
+        else:
+            time_emb = self.relu(self.time_mlp(t))
+            if cond_embed is not None:
+                cond_embed = self.relu(self.cond_mlp(cond_embed))
+                x = x * cond_embed[(..., ) + (None, ) * 2]
+            x = x + time_emb[(..., ) + (None, ) * 2]
         x = self.conv2(x)
         return x
     
@@ -60,10 +67,10 @@ class UpBlock(nn.Module):
         super().__init__()
         self.deconv = nn.ConvTranspose2d(in_channels, in_channels, 2, stride=2)
         self.conv_block = ConvBlock(2*in_channels, out_channels, time_embed_dim)
-    def forward(self, x, skip_conn, t):
+    def forward(self, x, skip_conn, t, cond_embed=None):
         x = self.deconv(x)
         x = torch.cat([x, skip_conn], dim=1)
-        return self.conv_block(x, t)
+        return self.conv_block(x, t, cond_embed)
     
     
 class UNet(nn.Module):
@@ -96,7 +103,7 @@ class UNet(nn.Module):
         timestep_tensor = torch.ones(1).to(x.device) * timestep
         t = self.time_mlp(timestep_tensor)
         for down_block in self.encoder:
-            x, w = down_block(x, t)
+            x, w = down_block(x, None)
             skip_connections.append(w)
         x = self.neck(x, t)
         for w, up_block in zip(skip_connections[::-1], self.decoder):
@@ -107,4 +114,45 @@ class UNet(nn.Module):
     def to(self, device):
         super().to(device)
         self.time_mlp.to(device)
+        return self
+    
+class Conditional_UNet(UNet):
+    '''Conditional UNet for Diffusion.'''
+    def __init__(self, in_channels=1, out_channels=1, block_out_channels=[128, 256, 512], embed_dim=32, n_classes=10, device='cpu'):
+        '''Initialize a Conditional UNet model.
+        in_channels: channels of input images.
+        out_channels: channels of output images.
+        block_out_channels: number of channels as output of each UNet convolotional block.
+        embed_dim: dimension of the embedding (time / conditional). Must be greater or equal than n_classes.'''
+        super().__init__(in_channels, out_channels, block_out_channels, embed_dim, device)
+        assert embed_dim >= n_classes
+        self.n_classes = n_classes
+        self.cond_embedding = nn.Sequential(
+            nn.Linear(n_classes, embed_dim),
+            nn.ReLU(),
+            nn.Linear(embed_dim, embed_dim),
+        )
+        
+    def forward(self, x, timestep, c=None):
+        skip_connections = []
+        timestep_tensor = torch.ones(1).to(x.device) * timestep
+        t = self.time_mlp(timestep_tensor)
+        if c is not None:
+            c = nn.functional.one_hot(c, num_classes=self.n_classes).float()
+            cond_embed = self.cond_embedding(c)
+        else:
+            cond_embed = None
+        for down_block in self.encoder:
+            x, w = down_block(x, None)
+            skip_connections.append(w)
+        x = self.neck(x, t)
+        for w, up_block in zip(skip_connections[::-1], self.decoder):
+            x = up_block(x, w, t, cond_embed)
+        x = self.outConv(x)
+        return x
+    
+    def to(self, device):
+        super().to(device)
+        self.time_mlp.to(device)
+        self.cond_embedding.to(device)
         return self
