@@ -4,7 +4,6 @@ A diffusion model to generate hand-written digits.
 This repository contains a PyTorch implementation of the diffusion model for generating hand-written digits. The model is trained on the MNIST dataset.
 The model is based on the paper "Denoising Diffusion Probabilistic Models" by Jonathan Ho, Ajay Jain, and Pieter Abbeel. The architecture used for backward process is a basic UNet with temporal context added at each convolutional block.
 
-
 Please refer to the following papers for more information on the diffusion model:
 
 Sources :
@@ -30,4 +29,5 @@ Sources :
       primaryClass={cs.LG}
 }
 ```
-<!> This project is under development <!>
+
+
